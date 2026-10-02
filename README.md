@@ -4,6 +4,18 @@ An **Agent Usage** tab for [WNotch](https://github.com/Brick-Bread/WNotch). It k
 
 For each account, the tab shows the email and plan when the provider supplies them, usage bars for reported limits, and local reset times. Rename an account in **Details**, or press **Arrange** in the overview to reveal Move up/down controls. Codex also shows banked-reset counts and each available reset's expiration when its separate read-only credit response supplies one. The overview shows the first three expirations; **Details** shows the full list. Missing dates stay marked unavailable. A failed refresh leaves the last reading marked stale rather than presenting it as current.
 
+## Screenshots
+
+### Usage overview
+
+![Two signed-in accounts with usage bars and reset times](docs/screenshots/usage-overview.png)
+
+### Accounts & sign-in
+
+![Account list and sign-in actions](docs/screenshots/accounts.png)
+
+![Additional provider sign-in options](docs/screenshots/providers.png)
+
 ## Install
 
 In WNotch **Settings → Plugins**, enter `tinywifi/WNotch-AgentStats` and press **Install**, then **Save** to enable it. WNotch downloads the ZIP attached to the latest release. Later, use **Check for updates** in the same settings page.
