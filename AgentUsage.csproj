@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <NotchCorePath Condition="'$(NotchCorePath)' == ''">$(LocalAppData)\Programs\Notch\Notch.Core.dll</NotchCorePath>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AgentUsage.Checks" />
+    <Compile Remove="Checks\**\*.cs" />
+    <Reference Include="Notch.Core">
+      <HintPath>$(NotchCorePath)</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.0" />
+    <PackageReference Include="SQLitePCLRaw.provider.winsqlite3" Version="2.1.11" />
+    <None Update="plugin.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,9 @@
+{
+  "id": "agentstats.agent-usage",
+  "name": "WNotch-AgentStats",
+  "version": "1.2.0",
+  "description": "Coding-agent accounts and usage in the notch.",
+  "assembly": "AgentUsage.dll",
+  "apiVersion": 5,
+  "repository": "tinywifi/WNotch-AgentStats"
+}
