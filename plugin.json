@@ -1,7 +1,7 @@
 {
   "id": "agentstats.agent-usage",
   "name": "WNotch-AgentStats",
-  "version": "1.3.2",
+  "version": "1.3.4",
   "description": "Coding-agent accounts and usage in the notch.",
   "assembly": "AgentUsage.dll",
   "apiVersion": 5,

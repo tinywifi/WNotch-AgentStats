@@ -37,11 +37,33 @@ internal sealed record UsageSnapshot(
     bool Manual = false,
     long? BankedResets = null,
     long? ApplicableBankedResets = null,
-    IReadOnlyList<DateTimeOffset?>? BankedResetExpiries = null);
+    IReadOnlyList<DateTimeOffset?>? BankedResetExpiries = null,
+    bool SignInRequired = false);
 
 internal static class UsageText
 {
     public static string Percent(double? value) => value is null ? "Unavailable" : $"{value:0.#}% used · {Math.Max(0, 100 - value.Value):0.#}% left";
+
+    public static string Freshness(UsageSnapshot? snapshot, DateTimeOffset now)
+    {
+        if (snapshot is null) return "Waiting for first refresh";
+        if (snapshot.SignInRequired) return "Not signed in · reconnect this account";
+        if (snapshot.Error is not null)
+            return snapshot.CheckedAt == default ? "Refresh failed · no reading yet" :
+                $"Refresh failed · last updated {Age(snapshot.CheckedAt, now)}";
+        if (snapshot.CheckedAt == default) return "Waiting for first refresh";
+        return $"Updated {Age(snapshot.CheckedAt, now)}";
+    }
+
+    private static string Age(DateTimeOffset at, DateTimeOffset now)
+    {
+        TimeSpan age = now - at;
+        if (age < TimeSpan.FromMinutes(1)) return "just now";
+        if (age < TimeSpan.FromHours(1)) return $"{(int)age.TotalMinutes} min ago";
+        if (age < TimeSpan.FromDays(1)) return $"{(int)age.TotalHours} hr ago";
+        int days = (int)age.TotalDays;
+        return days == 1 ? "1 day ago" : $"{days} days ago";
+    }
 
     public static string Reset(DateTimeOffset? at, DateTimeOffset now)
     {

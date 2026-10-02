@@ -150,6 +150,7 @@ public sealed class AgentUsagePlugin : INotchPlugin
                 catch (OperationCanceledException) when (_stop.IsCancellationRequested) { break; }
                 catch (Exception ex)
                 {
+                    bool signInRequired = RequiresSignIn(ex);
                     string error = ex switch
                     {
                         HttpRequestException http => http.Message,
@@ -165,10 +166,10 @@ public sealed class AgentUsagePlugin : INotchPlugin
                             _snapshots.TryGetValue(account.Id, out UsageSnapshot? previous);
                             string? scope = null;
                             try { scope = _fetcher.CredentialScope(account); } catch { /* Sign-in file may be missing. */ }
-                            if (scope is null || !_scopes.TryGetValue(account.Id, out string? savedScope) || savedScope != scope)
+                            if (signInRequired || scope is null || !_scopes.TryGetValue(account.Id, out string? savedScope) || savedScope != scope)
                                 previous = null;
                             _snapshots[account.Id] = previous is null
-                                ? new(null, null, [], DateTimeOffset.UtcNow, error)
+                                ? new(null, null, [], default, error, SignInRequired: signInRequired)
                                 : previous with { Error = error };
                             _nextRefresh[account.Id] = DateTimeOffset.UtcNow.AddMinutes(ex switch
                             {
@@ -189,6 +190,9 @@ public sealed class AgentUsagePlugin : INotchPlugin
         finally { _refreshGate.Release(); }
     }
 
+    internal static bool RequiresSignIn(Exception ex) => ex is SignInRequiredException or FileNotFoundException or
+        HttpRequestException { StatusCode: HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden };
+
     private void Render()
     {
         lock (_gate)
@@ -198,6 +202,7 @@ public sealed class AgentUsagePlugin : INotchPlugin
             {
                 View.Add => BuildAdd(),
                 View.Detail => BuildDetail(),
+                View.Settings => BuildSettings(),
                 _ => BuildOverview()
             };
             _host.Pages.Set(page);
@@ -210,29 +215,34 @@ public sealed class AgentUsagePlugin : INotchPlugin
         const int pageSize = 5;
         int pageCount = Math.Max(1, (accounts.Length + pageSize - 1) / pageSize);
         _overviewPage = Math.Clamp(_overviewPage, 0, pageCount - 1);
-        var blocks = new List<PluginBlock> { PrivacyToggle() };
+        var blocks = new List<PluginBlock>();
         foreach (Account account in accounts.Skip(_overviewPage * pageSize).Take(pageSize))
         {
             UsageSnapshot? snapshot = Current(account);
             IReadOnlyList<QuotaWindow> windows = snapshot?.Windows ?? [];
-            blocks.Add(new PluginText { Text = $"{ProviderName(account.Provider)} · {account.Label}", Style = PluginTextStyle.Heading });
+            if (blocks.Count > 0) blocks.Add(new PluginSeparator());
+            string plan = snapshot?.Plan ?? account.ManualPlan ?? "Plan unavailable";
+            blocks.Add(new PluginText { Text = $"{ProviderName(account.Provider)} · {account.Label} · {plan}", Style = PluginTextStyle.Heading });
             AddEmail(blocks, account, snapshot?.Identity, "Email", "Unavailable");
-            blocks.Add(new PluginValueRow { Label = "Plan", Value = snapshot?.Plan ?? account.ManualPlan ?? "Unavailable" });
-            AddBankedResets(blocks, snapshot, account.Provider, false);
-            if (snapshot?.Error is not null)
-                blocks.Add(new PluginText { Text = "Stale / unavailable: " + snapshot.Error, Style = PluginTextStyle.Muted, Color = GlowColor.Amber });
-            if (windows.Count == 0)
-                blocks.Add(new PluginText { Text = snapshot is null ? "Awaiting refresh" : "No measured quota available", Style = PluginTextStyle.Muted });
-            foreach (QuotaWindow window in windows.Take(7))
+            if (HasReading(snapshot))
             {
-                if (window.UsedPercent is null)
-                    blocks.Add(new PluginValueRow { Label = window.Label, Value = "Usage unavailable" });
+                if (windows.Count == 0)
+                    blocks.Add(new PluginText { Text = "Provider did not report a quota limit", Style = PluginTextStyle.Muted });
                 else
-                    blocks.Add(new PluginProgress { Label = window.Label, Value = UsageText.Percent(window.UsedPercent),
-                        Progress = Math.Clamp(window.UsedPercent.Value / 100, 0, 1),
-                        Color = window.UsedPercent >= 90 ? GlowColor.Red : null });
-                blocks.Add(new PluginText { Text = UsageText.Reset(window.ResetsAt, DateTimeOffset.UtcNow), Style = PluginTextStyle.Muted });
+                {
+                    QuotaWindow window = windows[0];
+                    if (window.UsedPercent is null)
+                        blocks.Add(new PluginValueRow { Label = window.Label, Value = "Provider did not report usage" });
+                    else
+                        blocks.Add(new PluginProgress { Label = window.Label, Value = UsageText.Percent(window.UsedPercent),
+                            Progress = Math.Clamp(window.UsedPercent.Value / 100, 0, 1),
+                            Color = window.UsedPercent >= 90 ? GlowColor.Red : null });
+                    blocks.Add(new PluginText { Text = UsageText.Reset(window.ResetsAt, DateTimeOffset.UtcNow), Style = PluginTextStyle.Muted });
+                }
             }
+            blocks.Add(new PluginText { Text = account.Source == AccountSource.Manual ? "Manual entry" : UsageText.Freshness(snapshot, DateTimeOffset.UtcNow),
+                Style = PluginTextStyle.Muted, Color = snapshot?.Error is not null ? GlowColor.Amber : null });
+            AddBankedResets(blocks, snapshot, account.Provider, false);
             var accountActions = new List<PluginAction>();
             if (_arranging)
             {
@@ -241,7 +251,7 @@ public sealed class AgentUsagePlugin : INotchPlugin
                 accountActions.Add(new PluginAction { Label = "Move down", Enabled = Array.IndexOf(accounts, account) < accounts.Length - 1,
                     Clicked = () => Ui(() => MoveAccount(account, 1)) });
             }
-            accountActions.Add(new PluginAction { Label = windows.Count > 7 ? "Details · more limits" : "Details",
+            accountActions.Add(new PluginAction { Label = "Details",
                 Clicked = () => Ui(() => { _selected = account.Id; _view = View.Detail; }) });
             blocks.Add(new PluginButtons { Actions = accountActions });
         }
@@ -252,7 +262,8 @@ public sealed class AgentUsagePlugin : INotchPlugin
             new() { Label = "Accounts & sign-in", Clicked = () => Ui(() => { _view = View.Add; _notice = null; }) },
             new() { Label = "Refresh", Clicked = () => _ = RefreshAll(true) },
             new() { Label = _arranging ? "Done arranging" : "Arrange", Enabled = accounts.Length > 1,
-                Clicked = () => Ui(() => _arranging = !_arranging) }
+                Clicked = () => Ui(() => _arranging = !_arranging) },
+            new() { Label = "Settings", Clicked = () => Ui(() => { _view = View.Settings; _notice = null; }) }
         };
         if (_overviewPage > 0) actions.Add(new PluginAction { Label = "Previous", Clicked = () => Ui(() => _overviewPage--) });
         if (_overviewPage < pageCount - 1) actions.Add(new PluginAction { Label = "Next", Clicked = () => Ui(() => _overviewPage++) });
@@ -274,10 +285,10 @@ public sealed class AgentUsagePlugin : INotchPlugin
         IReadOnlyList<QuotaWindow> windows = account.Source == AccountSource.Manual ? account.ManualWindows : snapshot?.Windows ?? [];
         var blocks = new List<PluginBlock>
         {
-            PrivacyToggle(),
             new PluginText { Text = $"{ProviderName(account.Provider)} · {account.Label}", Style = PluginTextStyle.Heading },
             new PluginValueRow { Label = "Plan", Value = snapshot?.Plan ?? account.ManualPlan ?? "Unavailable" },
-            new PluginValueRow { Label = "Updated", Value = account.Source == AccountSource.Manual ? "Manual entry" : snapshot is null ? "Not yet" : snapshot.CheckedAt.ToLocalTime().ToString("g") },
+            new PluginValueRow { Label = "Status", Value = account.Source == AccountSource.Manual ? "Manual entry" : UsageText.Freshness(snapshot, DateTimeOffset.UtcNow) },
+            new PluginValueRow { Label = "Updated", Value = account.Source == AccountSource.Manual ? "Manual entry" : snapshot?.CheckedAt is { } checkedAt && checkedAt != default ? checkedAt.ToLocalTime().ToString("g") : "Not yet" },
         };
         AddEmail(blocks, account, snapshot?.Identity, "Email", "Unavailable");
         blocks.Add(new PluginTextField { Label = "Account name", Value = account.Label, SubmitLabel = "Rename",
@@ -289,10 +300,11 @@ public sealed class AgentUsagePlugin : INotchPlugin
             blocks.Add(new PluginTextField { Label = "Email override", Value = account.Email, Hint = "Optional, submit to save or clear",
                 Submitted = value => Ui(() => SaveEmail(account, value)) });
         if (snapshot?.Error is not null) blocks.Add(new PluginText { Text = "Stale / unavailable: " + snapshot.Error, Style = PluginTextStyle.Muted, Color = GlowColor.Amber });
-        if (windows.Count == 0) blocks.Add(new PluginText { Text = "No measured quota windows are available for this account.", Style = PluginTextStyle.Muted });
+        if (HasReading(snapshot) && windows.Count == 0)
+            blocks.Add(new PluginText { Text = "Provider did not report a quota limit.", Style = PluginTextStyle.Muted });
         foreach (QuotaWindow window in windows.Take(20))
         {
-            if (window.UsedPercent is null) blocks.Add(new PluginValueRow { Label = window.Label, Value = "Usage unavailable" });
+            if (window.UsedPercent is null) blocks.Add(new PluginValueRow { Label = window.Label, Value = "Provider did not report usage" });
             else blocks.Add(new PluginProgress { Label = window.Label, Value = UsageText.Percent(window.UsedPercent),
                 Progress = Math.Clamp(window.UsedPercent.Value / 100, 0, 1),
                 Color = window.UsedPercent >= 90 ? GlowColor.Red : null });
@@ -321,9 +333,8 @@ public sealed class AgentUsagePlugin : INotchPlugin
     {
         var blocks = new List<PluginBlock>
         {
-            PrivacyToggle(),
             new PluginText { Text = "Provider accounts", Style = PluginTextStyle.Heading },
-            new PluginText { Text = "Existing CLI and app sign-ins are detected locally. Add a separate Codex or Claude account only if you want another login; credentials stay on this PC.", Style = PluginTextStyle.Muted }
+            new PluginText { Text = "Add separate Codex or Claude logins, or use accounts from installed provider clients.", Style = PluginTextStyle.Muted }
         };
         foreach (Provider provider in Enum.GetValues<Provider>())
         {
@@ -331,26 +342,22 @@ public sealed class AgentUsagePlugin : INotchPlugin
             UsageSnapshot? snapshot = system is null ? null : Current(system);
             blocks.Add(new PluginSeparator());
             blocks.Add(new PluginText { Text = ProviderName(provider), Style = PluginTextStyle.Heading });
-            blocks.Add(new PluginText { Text = provider switch
-            {
-                Provider.Codex => "Official Codex browser sign-in; each added account gets its own local context.",
-                Provider.Claude => "Official Claude Code sign-in; each added account gets its own local context.",
-                Provider.Gemini => "Uses the Gemini CLI sign-in already on this computer. Individual quota reporting may be unavailable from Google.",
-                Provider.Grok => "Uses ~/.grok/auth.json. Sign in with Grok CLI, then detect it here.",
-                _ => "Uses the Cursor IDE or cursor-agent sign-in already on this computer."
-            }, Style = PluginTextStyle.Muted });
-            if (system is null) blocks.Add(new PluginValueRow { Label = "System default", Value = "Not detected" });
+            if (system is null) blocks.Add(new PluginValueRow { Label = "System default", Value = "No local sign-in found" });
             else AddEmail(blocks, system, snapshot?.Identity, "System default", "Detected");
             Account[] managed = _data.Accounts.Where(a => a.Provider == provider && !a.DefaultProfile).ToArray();
             foreach (Account account in managed.Take(5))
-                AddEmail(blocks, account, Current(account)?.Identity, account.Label, "Awaiting refresh");
+            {
+                UsageSnapshot? managedSnapshot = Current(account);
+                string fallback = managedSnapshot is null ? "Waiting for first refresh" : managedSnapshot.SignInRequired ? "Not signed in" :
+                    managedSnapshot.Error is not null && !HasReading(managedSnapshot) ? "Refresh failed" : "Email not reported";
+                AddEmail(blocks, account, managedSnapshot?.Identity, account.Label, fallback);
+            }
             if (managed.Length > 5)
                 blocks.Add(new PluginText { Text = $"{managed.Length - 5} more account(s) on the overview.", Style = PluginTextStyle.Muted });
             blocks.Add(new PluginButtons { Actions =
             [
-                new PluginAction { Label = provider is Provider.Codex or Provider.Claude ? "Sign in with OAuth" : "Open provider client",
-                    Clicked = () => Ui(() => StartProviderSignIn(provider)) },
-                new PluginAction { Label = "Detect local sign-in", Clicked = () => Ui(() => DetectLocal(provider)) }
+                new PluginAction { Label = provider is Provider.Codex or Provider.Claude ? "Add account" : "Open provider client",
+                    Clicked = () => Ui(() => StartProviderSignIn(provider)) }
             ] });
             if (_pendingLogin is { } pending && pending.Provider == provider)
             {
@@ -375,27 +382,40 @@ public sealed class AgentUsagePlugin : INotchPlugin
         {
             Id = PageId, Title = "Agent Usage", Status = _notice,
             Back = () => Ui(() => { _view = View.Overview; _notice = null; }), BackLabel = "All accounts",
+            Actions = [new PluginAction { Label = "Detect local sign-ins", Clicked = () => Ui(DetectLocalSignIns) }],
             Blocks = blocks
         };
     }
 
-    private void DetectLocal(Provider provider)
+    private PluginPage BuildSettings() => new()
     {
-        Account? existing = _data.Accounts.FirstOrDefault(a => a.Provider == provider && a.DefaultProfile);
-        bool wasHidden = _data.HiddenDefaults.Contains(provider);
-        if (existing is null && AddDefaultIfFound(provider, true))
+        Id = PageId, Title = "Agent Usage", Status = _notice,
+        Back = () => Ui(() => { _view = View.Overview; _notice = null; }), BackLabel = "All accounts",
+        Blocks =
+        [
+            new PluginText { Text = "Settings", Style = PluginTextStyle.Heading },
+            PrivacyToggle()
+        ]
+    };
+
+    private void DetectLocalSignIns()
+    {
+        int previousCount = _data.Accounts.Count;
+        HashSet<Provider> previousHidden = [.. _data.HiddenDefaults];
+        foreach (Provider provider in Enum.GetValues<Provider>()) AddDefaultIfFound(provider, true);
+        int added = _data.Accounts.Count - previousCount;
+        if (added > 0)
         {
             try { Save(); }
             catch
             {
-                _data.Accounts.RemoveAll(a => a.Provider == provider && a.DefaultProfile);
-                if (wasHidden) _data.HiddenDefaults.Add(provider);
+                _data.Accounts.RemoveRange(previousCount, added);
+                _data.HiddenDefaults.Clear();
+                _data.HiddenDefaults.UnionWith(previousHidden);
                 throw;
             }
-            _notice = $"{ProviderName(provider)} local sign-in detected.";
         }
-        else _notice = existing is null || !File.Exists(UsageFetcher.DefaultProfile(provider))
-            ? $"No {ProviderName(provider)} local sign-in found. Sign in with its client first." : "Local sign-in refreshed.";
+        _notice = added > 0 ? $"Detected {added} local account(s)." : "Local sign-ins checked.";
         _ = RefreshAll(true);
     }
 
@@ -408,7 +428,7 @@ public sealed class AgentUsagePlugin : INotchPlugin
         if (provider is not (Provider.Codex or Provider.Claude))
         {
             using Process? client = Process.Start(ProviderSignIn.StartInfo(executable, provider, null));
-            _notice = client is null ? "Could not open the provider client." : "Sign in with the provider client, then press Detect local sign-in.";
+            _notice = client is null ? "Could not open the provider client." : "Sign in with the provider client, then press Detect local sign-ins.";
             return;
         }
         string profile = reconnect?.ProfilePath is { } path
@@ -701,23 +721,20 @@ public sealed class AgentUsagePlugin : INotchPlugin
 
     private static void AddBankedResets(List<PluginBlock> blocks, UsageSnapshot? snapshot, Provider provider, bool details)
     {
-        if (provider != Provider.Codex || snapshot?.BankedResets is not long count) return;
+        if (provider != Provider.Codex || snapshot?.BankedResets is not long count || count <= 0) return;
         string available = snapshot.ApplicableBankedResets is long applicable
             ? $"{count} banked · {applicable} usable now" : $"{count} banked";
         blocks.Add(new PluginValueRow { Label = "Banked resets", Value = available });
-        if (count <= 0) return;
+        if (!details) return;
         IReadOnlyList<DateTimeOffset?>? expiries = snapshot.BankedResetExpiries;
         if (expiries is null || expiries.Count == 0)
         {
             blocks.Add(new PluginText { Text = "Individual expiry dates are unavailable right now.", Style = PluginTextStyle.Muted });
             return;
         }
-        int visible = details ? expiries.Count : Math.Min(3, expiries.Count);
-        for (int i = 0; i < visible; i++)
+        for (int i = 0; i < expiries.Count; i++)
             blocks.Add(new PluginValueRow { Label = $"Banked reset {i + 1}", Value = UsageText.Expiry(expiries[i], DateTimeOffset.UtcNow) });
-        if (expiries.Count > visible)
-            blocks.Add(new PluginText { Text = $"{expiries.Count - visible} more in Details", Style = PluginTextStyle.Muted });
-        else if (expiries.Count < count)
+        if (expiries.Count < count)
             blocks.Add(new PluginText { Text = $"{count - expiries.Count} reset(s) have no individual expiry details.", Style = PluginTextStyle.Muted });
     }
 
@@ -727,6 +744,8 @@ public sealed class AgentUsagePlugin : INotchPlugin
     private UsageSnapshot? Current(Account account) => account.Source == AccountSource.Manual
         ? new(account.ManualPlan, account.Label, account.ManualWindows, DateTimeOffset.UtcNow, Manual: true)
         : _snapshots.GetValueOrDefault(account.Id);
+
+    private static bool HasReading(UsageSnapshot? snapshot) => snapshot is not null && !snapshot.SignInRequired && snapshot.CheckedAt != default;
 
     private void Save() => _store!.Save(_data);
 
@@ -775,5 +794,5 @@ public sealed class AgentUsagePlugin : INotchPlugin
         public Uri? LocalServer { get; set; }
     }
 
-    private enum View { Overview, Detail, Add }
+    private enum View { Overview, Detail, Add, Settings }
 }

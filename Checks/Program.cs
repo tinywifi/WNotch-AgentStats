@@ -12,6 +12,10 @@ static void Check(bool condition, string message)
 Check(UsageText.ParseManual("Weekly", "42.5", "2030-01-04 12:00 +00:00")?.UsedPercent == 42.5, "manual limit");
 Check(UsageText.ParseManual("Weekly", "101", "2030-01-04 12:00 +00:00") is null, "invalid percent");
 Check(UsageText.ParseManual("Weekly", "42", "bad date") is null, "invalid reset");
+Check(AgentUsagePlugin.RequiresSignIn(new SignInRequiredException("expired")), "expired sign-in status");
+Check(AgentUsagePlugin.RequiresSignIn(new FileNotFoundException()), "missing sign-in status");
+Check(AgentUsagePlugin.RequiresSignIn(new HttpRequestException("rejected", null, System.Net.HttpStatusCode.Unauthorized)), "rejected sign-in status");
+Check(!AgentUsagePlugin.RequiresSignIn(new HttpRequestException("offline")), "network failure is not sign-out");
 var login = ProviderSignIn.StartInfo(@"C:\Program Files\Codex\codex.exe", Provider.Codex, @"C:\Profiles\second");
 Check(login.FileName == "cmd.exe" && login.Arguments == "/k \"\"C:\\Program Files\\Codex\\codex.exe\" login\"", "Codex login command quoting");
 Check(login.Environment["CODEX_HOME"] == @"C:\Profiles\second", "Codex isolated account profile");
@@ -122,6 +126,10 @@ typeof(AgentUsagePlugin).GetField("_data", privateFlags)!.SetValue(plugin, priva
 typeof(AgentUsagePlugin).GetField("_selected", privateFlags)!.SetValue(plugin, firstAccount.Id);
 var snapshots = (Dictionary<Guid, UsageSnapshot>)typeof(AgentUsagePlugin).GetField("_snapshots", privateFlags)!.GetValue(plugin)!;
 snapshots[secondAccount.Id] = new UsageSnapshot("Pro", "detected@example.test", [], DateTimeOffset.UtcNow);
+snapshots[firstAccount.Id] = new UsageSnapshot("Pro", null,
+    [new QuotaWindow("Weekly", 40, DateTimeOffset.UtcNow.AddDays(3)),
+     new QuotaWindow("Model · 5-hour", 20, DateTimeOffset.UtcNow.AddHours(2))],
+    DateTimeOffset.UtcNow.AddMinutes(-3.5), BankedResets: 0);
 PluginPage Page(string method) => (PluginPage)typeof(AgentUsagePlugin).GetMethod(method, privateFlags)!.Invoke(plugin, null)!;
 string PageText(PluginPage page) => string.Join("\n", page.Blocks.Select(block => block switch
 {
@@ -134,10 +142,42 @@ string PageText(PluginPage page) => string.Join("\n", page.Blocks.Select(block =
 foreach (string method in new[] { "BuildOverview", "BuildDetail", "BuildAdd" })
 {
     PluginPage page = Page(method);
-    Check(page.Blocks.First() is PluginToggle { Value: true }, method + " privacy toggle");
+    Check(!page.Blocks.OfType<PluginToggle>().Any(), method + " no inline privacy toggle");
     Check(!PageText(page).Contains("private@example.test") && !PageText(page).Contains("detected@example.test"), method + " masked emails");
     Check(!page.Blocks.OfType<PluginTextField>().Any(field => field.Label == "Email override"), method + " no raw email field");
 }
+Check(Page("BuildSettings").Blocks.OfType<PluginToggle>().Single().Value, "privacy toggle in Settings");
+PluginPage overview = Page("BuildOverview");
+Check(overview.Actions.Any(action => action.Label == "Settings"), "Settings action");
+Check(overview.Blocks.OfType<PluginProgress>().Count() == 1, "overview shows only main limit");
+Check(overview.Blocks.OfType<PluginText>().Any(text => text.Text.Contains("Codex · Personal · Pro")), "account heading includes plan");
+Check(PageText(overview).Contains("Updated 3 min ago"), "relative freshness on account");
+Check(PageText(overview).Contains("Provider did not report a quota limit"), "successful empty quota state");
+Check(!overview.Blocks.OfType<PluginValueRow>().Any(row => row.Label == "Banked resets"), "hide zero banked resets");
+Check(Page("BuildDetail").Blocks.OfType<PluginProgress>().Count() == 2, "details retain secondary limits");
+UsageSnapshot secondReading = snapshots[secondAccount.Id];
+snapshots.Remove(secondAccount.Id);
+Check(PageText(Page("BuildOverview")).Contains("Waiting for first refresh"), "pending first refresh state");
+Check(PageText(Page("BuildAdd")).Contains("Waiting for first refresh"), "pending sign-in page state");
+snapshots[secondAccount.Id] = new UsageSnapshot(null, null, [], default, "Sign-in rejected", SignInRequired: true);
+Check(PageText(Page("BuildOverview")).Contains("Not signed in · reconnect this account"), "signed-out state");
+Check(PageText(Page("BuildAdd")).Contains("Not signed in"), "signed-out sign-in page state");
+snapshots[secondAccount.Id] = secondReading;
+UsageSnapshot firstReading = snapshots[firstAccount.Id];
+snapshots[firstAccount.Id] = firstReading with { Error = "Provider timed out." };
+Check(PageText(Page("BuildOverview")).Contains("Refresh failed · last updated 3 min ago"), "stale reading status");
+Check(Page("BuildOverview").Blocks.OfType<PluginProgress>().Count() == 1, "failed refresh keeps prior reading");
+snapshots[firstAccount.Id] = new UsageSnapshot(null, null, [], default, "Provider timed out.");
+Check(PageText(Page("BuildOverview")).Contains("Refresh failed · no reading yet"), "failed first refresh status");
+snapshots[firstAccount.Id] = firstReading;
+PluginPage signIn = Page("BuildAdd");
+Check(signIn.Actions.Single().Label == "Detect local sign-ins", "one global detection action");
+Check(signIn.Blocks.OfType<PluginButtons>().SelectMany(buttons => buttons.Actions)
+    .Count(action => action.Label is "Add account" or "Open provider client") == 5, "one provider action per provider");
+snapshots[firstAccount.Id] = snapshots[firstAccount.Id] with { BankedResets = 2,
+    BankedResetExpiries = [DateTimeOffset.UtcNow.AddDays(2), DateTimeOffset.UtcNow.AddDays(4)] };
+Check(!Page("BuildOverview").Blocks.OfType<PluginValueRow>().Any(row => row.Label.StartsWith("Banked reset ")), "expiry list stays in Details");
+Check(Page("BuildDetail").Blocks.OfType<PluginValueRow>().Count(row => row.Label.StartsWith("Banked reset ")) == 2, "details show full expiry list");
 PluginAction maskedEmail = Page("BuildOverview").Blocks.OfType<PluginButtons>()
     .SelectMany(buttons => buttons.Actions).First(action => action.Label.StartsWith("Email · ▒"));
 maskedEmail.Clicked!();

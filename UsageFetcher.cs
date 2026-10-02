@@ -8,6 +8,8 @@ using Microsoft.Data.Sqlite;
 
 namespace AgentUsage;
 
+internal sealed class SignInRequiredException(string message) : InvalidOperationException(message);
+
 internal sealed class UsageFetcher
 {
     static UsageFetcher() => SQLitePCL.raw.SetProvider(new SQLitePCL.SQLite3Provider_winsqlite3());
@@ -67,7 +69,7 @@ internal sealed class UsageFetcher
     {
         if (account.Source == AccountSource.Secret)
         {
-            if (string.IsNullOrWhiteSpace(account.Secret)) throw new InvalidOperationException("No saved credential.");
+            if (string.IsNullOrWhiteSpace(account.Secret)) throw new SignInRequiredException("No saved credential.");
             string token = account.Secret.Trim();
             if (account.Provider != Provider.Codex) return new(token);
             JsonElement claims = JwtClaims(token);
@@ -76,7 +78,7 @@ internal sealed class UsageFetcher
                 JsonValue.String(claims, "https://api.openai.com/auth", "chatgpt_account_id"));
         }
 
-        string path = account.ProfilePath ?? DefaultProfile(account.Provider) ?? throw new InvalidOperationException("No profile path.");
+        string path = account.ProfilePath ?? DefaultProfile(account.Provider) ?? throw new SignInRequiredException("No profile path.");
         if (Directory.Exists(path)) path = Path.Combine(path, Path.GetFileName(DefaultProfile(account.Provider)!));
         if (!File.Exists(path)) throw new FileNotFoundException("Sign-in file is missing. Sign in with the provider and refresh.");
         if (account.Provider == Provider.Cursor)
@@ -85,7 +87,7 @@ internal sealed class UsageFetcher
             {
                 using JsonDocument cursorAuth = JsonDocument.Parse(File.ReadAllText(path));
                 string? token = JsonValue.String(cursorAuth.RootElement, "accessToken");
-                if (string.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("Cursor CLI sign-in is unavailable.");
+                if (string.IsNullOrWhiteSpace(token)) throw new SignInRequiredException("Cursor CLI sign-in is unavailable.");
                 string config = Path.Combine(Path.GetDirectoryName(path)!, "cli-config.json");
                 string? email = null;
                 if (File.Exists(config))
@@ -112,7 +114,7 @@ internal sealed class UsageFetcher
     private static Credential ReadCodex(JsonElement root)
     {
         string? access = JsonValue.String(root, "tokens", "access_token");
-        if (string.IsNullOrWhiteSpace(access)) throw new InvalidOperationException("Codex OAuth sign-in is unavailable; API keys do not report subscription quotas.");
+        if (string.IsNullOrWhiteSpace(access)) throw new SignInRequiredException("Codex OAuth sign-in is unavailable; API keys do not report subscription quotas.");
         JsonElement claims = JwtClaims(JsonValue.String(root, "tokens", "id_token"));
         return new(access, JsonValue.String(claims, "email"),
             JsonValue.String(claims, "https://api.openai.com/auth", "chatgpt_plan_type"),
@@ -123,10 +125,10 @@ internal sealed class UsageFetcher
     {
         JsonElement oauth = JsonValue.At(root, "claudeAiOauth");
         string? token = JsonValue.String(oauth, "accessToken");
-        if (string.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("Claude Code OAuth sign-in is unavailable.");
+        if (string.IsNullOrWhiteSpace(token)) throw new SignInRequiredException("Claude Code OAuth sign-in is unavailable.");
         long? expiry = JsonValue.Long(oauth, "expiresAt");
         if (expiry > 0 && DateTimeOffset.FromUnixTimeMilliseconds(expiry.Value) <= DateTimeOffset.UtcNow)
-            throw new InvalidOperationException("Claude Code token expired. Sign in again with Claude Code.");
+            throw new SignInRequiredException("Claude Code token expired. Sign in again with Claude Code.");
         return new(token, JsonValue.String(root, "oauthAccount", "emailAddress"),
             JsonValue.String(root, "oauthAccount", "subscriptionType"));
     }
@@ -134,10 +136,10 @@ internal sealed class UsageFetcher
     private static Credential ReadGemini(JsonElement root)
     {
         string? token = JsonValue.String(root, "access_token");
-        if (string.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("Gemini CLI OAuth sign-in is unavailable.");
+        if (string.IsNullOrWhiteSpace(token)) throw new SignInRequiredException("Gemini CLI OAuth sign-in is unavailable.");
         long? expiry = JsonValue.Long(root, "expiry_date");
         if (expiry > 0 && DateTimeOffset.FromUnixTimeMilliseconds(expiry.Value) <= DateTimeOffset.UtcNow)
-            throw new InvalidOperationException("Gemini CLI token expired. Open Gemini CLI to renew its sign-in.");
+            throw new SignInRequiredException("Gemini CLI token expired. Open Gemini CLI to renew its sign-in.");
         JsonElement claims = JwtClaims(JsonValue.String(root, "id_token"));
         return new(token, JsonValue.String(claims, "email"),
             JsonValue.String(claims, "hd") is null ? null : "Workspace");
@@ -154,7 +156,7 @@ internal sealed class UsageFetcher
             if (expires <= DateTimeOffset.UtcNow) continue;
             return new(token, JsonValue.String(entry.Value, "email"));
         }
-        throw new InvalidOperationException("Grok CLI sign-in is unavailable or expired.");
+        throw new SignInRequiredException("Grok CLI sign-in is unavailable or expired.");
     }
 
     internal static string ReadCursorToken(string path)
@@ -172,7 +174,7 @@ internal sealed class UsageFetcher
             byte[] bytes => Encoding.UTF8.GetString(bytes),
             _ => null
         };
-        if (string.IsNullOrWhiteSpace(token)) throw new InvalidOperationException("Cursor app sign-in is unavailable.");
+        if (string.IsNullOrWhiteSpace(token)) throw new SignInRequiredException("Cursor app sign-in is unavailable.");
         return token.Trim().Trim('"');
     }
 
@@ -288,15 +290,15 @@ internal sealed class UsageFetcher
             "{\"metadata\":{\"ideType\":\"GEMINI_CLI\",\"pluginType\":\"GEMINI\"}}", cancellation);
         JsonElement tier = tierDoc.RootElement;
         JsonElement ineligible = JsonValue.At(tier, "ineligibleTiers");
+        string? plan = JsonValue.String(tier, "paidTier", "name") ?? JsonValue.String(tier, "currentTier", "name") ?? JsonValue.String(tier, "currentTier", "id") ?? auth.Plan;
         if (ineligible.ValueKind == JsonValueKind.Array && auth.Plan != "Workspace" &&
             JsonValue.String(tier, "paidTier", "name") is null &&
             JsonValue.String(tier, "currentTier", "id") != "standard-tier" &&
             ineligible.EnumerateArray().Any(x => JsonValue.String(x, "reasonCode") == "UNSUPPORTED_CLIENT"))
-            throw new InvalidOperationException("Google no longer supplies Gemini CLI quota for this individual plan. Use manual tracking.");
+            return new(plan, auth.Identity, [], DateTimeOffset.UtcNow);
         string? project = JsonValue.String(tier, "cloudaicompanionProject");
         string body = project is null ? "{}" : JsonSerializer.Serialize(new { project });
         using JsonDocument quotaDoc = await Post("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota", auth.Token, body, cancellation);
-        string? plan = JsonValue.String(tier, "paidTier", "name") ?? JsonValue.String(tier, "currentTier", "name") ?? JsonValue.String(tier, "currentTier", "id") ?? auth.Plan;
         return ParseGemini(quotaDoc.RootElement, plan, auth.Identity);
     }
 
@@ -389,7 +391,7 @@ internal sealed class UsageFetcher
             x.StartsWith("WorkosCursorSessionToken=", StringComparison.Ordinal) ||
             x.StartsWith("__Secure-next-auth.session-token=", StringComparison.Ordinal) ||
             x.StartsWith("next-auth.session-token=", StringComparison.Ordinal));
-        return value ?? throw new InvalidOperationException("Cursor session must contain a supported session cookie.");
+        return value ?? throw new SignInRequiredException("Cursor session must contain a supported session cookie.");
     }
 
     private static void Add(List<QuotaWindow> windows, string label, JsonElement source, string percentKey, string resetKey, DateTimeOffset? defaultReset = null)
