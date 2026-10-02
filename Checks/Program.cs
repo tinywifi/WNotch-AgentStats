@@ -44,6 +44,12 @@ using (JsonDocument doc = JsonDocument.Parse("""{"rate_limit_reset_credits":{"av
 {
     UsageSnapshot usage = UsageFetcher.ParseCodex(doc.RootElement);
     Check(usage.BankedResets == 3 && usage.ApplicableBankedResets == 2, "Codex banked reset counts");
+    using JsonDocument credits = JsonDocument.Parse("""{"available_count":2,"credits":[{"status":"redeemed","expires_at":"2030-01-01T00:00:00Z"},{"status":"available","expires_at":"2030-02-01T00:00:00Z"},{"status":"available","expires_at":"2030-01-15T00:00:00Z"}]}""");
+    usage = UsageFetcher.AddCodexBankedResets(usage, credits.RootElement);
+    Check(usage.BankedResets == 2 && usage.ApplicableBankedResets == 2, "separate banked reset count");
+    Check(usage.BankedResetExpiries?.Count == 2 && usage.BankedResetExpiries[0]?.Month == 1 &&
+        usage.BankedResetExpiries[1]?.Month == 2, "individual banked reset expiries");
+    Check(UsageText.Expiry(usage.BankedResetExpiries?.FirstOrDefault(), DateTimeOffset.Parse("2030-01-01T00:00:00Z")).StartsWith("Expires in"), "expiry text");
 }
 using (JsonDocument doc = JsonDocument.Parse("""{"five_hour":{"utilization":18,"resets_at":"2030-01-01T05:00:00Z"},"seven_day":{"utilization":42,"resets_at":"2030-01-07T00:00:00Z"}}"""))
 {

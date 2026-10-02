@@ -218,7 +218,7 @@ public sealed class AgentUsagePlugin : INotchPlugin
             blocks.Add(new PluginValueRow { Label = "Plan", Value = snapshot?.Plan ?? account.ManualPlan ?? "Unavailable" });
             blocks.Add(new PluginTextField { Label = "Account name", Value = account.Label, SubmitLabel = "Rename",
                 Submitted = value => Ui(() => SaveLabel(account, value)) });
-            AddBankedResets(blocks, snapshot, account.Provider);
+            AddBankedResets(blocks, snapshot, account.Provider, false);
             if (snapshot?.Error is not null)
                 blocks.Add(new PluginText { Text = "Stale / unavailable: " + snapshot.Error, Style = PluginTextStyle.Muted, Color = GlowColor.Amber });
             if (windows.Count == 0)
@@ -275,7 +275,7 @@ public sealed class AgentUsagePlugin : INotchPlugin
             new PluginValueRow { Label = "Updated", Value = account.Source == AccountSource.Manual ? "Manual entry" : snapshot is null ? "Not yet" : snapshot.CheckedAt.ToLocalTime().ToString("g") },
         };
         blocks.Add(new PluginValueRow { Label = "Email", Value = account.Email ?? snapshot?.Identity ?? "Unavailable" });
-        AddBankedResets(blocks, snapshot, account.Provider);
+        AddBankedResets(blocks, snapshot, account.Provider, true);
         blocks.Add(new PluginTextField { Label = "Email override", Value = account.Email, Hint = "Optional, submit to save or clear",
             Submitted = value => Ui(() => SaveEmail(account, value)) });
         if (snapshot?.Error is not null) blocks.Add(new PluginText { Text = "Stale / unavailable: " + snapshot.Error, Style = PluginTextStyle.Muted, Color = GlowColor.Amber });
@@ -651,14 +651,26 @@ public sealed class AgentUsagePlugin : INotchPlugin
         _overviewPage = next / 5;
     }
 
-    private static void AddBankedResets(List<PluginBlock> blocks, UsageSnapshot? snapshot, Provider provider)
+    private static void AddBankedResets(List<PluginBlock> blocks, UsageSnapshot? snapshot, Provider provider, bool details)
     {
         if (provider != Provider.Codex || snapshot?.BankedResets is not long count) return;
         string available = snapshot.ApplicableBankedResets is long applicable
             ? $"{count} banked · {applicable} usable now" : $"{count} banked";
         blocks.Add(new PluginValueRow { Label = "Banked resets", Value = available });
-        if (count > 0)
-            blocks.Add(new PluginText { Text = "Individual expiry dates are not supplied by the Codex usage feed.", Style = PluginTextStyle.Muted });
+        if (count <= 0) return;
+        IReadOnlyList<DateTimeOffset?>? expiries = snapshot.BankedResetExpiries;
+        if (expiries is null || expiries.Count == 0)
+        {
+            blocks.Add(new PluginText { Text = "Individual expiry dates are unavailable right now.", Style = PluginTextStyle.Muted });
+            return;
+        }
+        int visible = details ? expiries.Count : Math.Min(3, expiries.Count);
+        for (int i = 0; i < visible; i++)
+            blocks.Add(new PluginValueRow { Label = $"Banked reset {i + 1}", Value = UsageText.Expiry(expiries[i], DateTimeOffset.UtcNow) });
+        if (expiries.Count > visible)
+            blocks.Add(new PluginText { Text = $"{expiries.Count - visible} more in Details", Style = PluginTextStyle.Muted });
+        else if (expiries.Count < count)
+            blocks.Add(new PluginText { Text = $"{count - expiries.Count} reset(s) have no individual expiry details.", Style = PluginTextStyle.Muted });
     }
 
     private static bool ValidEmail(string email) => email.Length == 0 ||

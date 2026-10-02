@@ -35,7 +35,8 @@ internal sealed record UsageSnapshot(
     string? Error = null,
     bool Manual = false,
     long? BankedResets = null,
-    long? ApplicableBankedResets = null);
+    long? ApplicableBankedResets = null,
+    IReadOnlyList<DateTimeOffset?>? BankedResetExpiries = null);
 
 internal static class UsageText
 {
@@ -48,6 +49,15 @@ internal static class UsageText
         if (left <= TimeSpan.Zero) return "Reset due; refresh for current quota";
         string relative = left.TotalDays >= 1 ? $"{(int)left.TotalDays}d {left.Hours}h" : $"{(int)left.TotalHours}h {left.Minutes}m";
         return $"Resets in {relative} ({at.Value.ToLocalTime():g})";
+    }
+
+    public static string Expiry(DateTimeOffset? at, DateTimeOffset now)
+    {
+        if (at is null) return "Expiry unavailable";
+        TimeSpan left = at.Value - now;
+        if (left <= TimeSpan.Zero) return "Expiry passed; refresh for current credits";
+        string relative = left.TotalDays >= 1 ? $"{(int)left.TotalDays}d {left.Hours}h" : $"{(int)left.TotalHours}h {left.Minutes}m";
+        return $"Expires in {relative} ({at.Value.ToLocalTime():g})";
     }
 
     public static QuotaWindow? ParseManual(string label, string percent, string reset)

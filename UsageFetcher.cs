@@ -179,7 +179,33 @@ internal sealed class UsageFetcher
     private static async Task<UsageSnapshot> FetchCodex(Credential auth, CancellationToken cancellation)
     {
         using JsonDocument doc = await Get("https://chatgpt.com/backend-api/wham/usage", auth.Token, false, cancellation, auth.AccountId);
-        return ParseCodex(doc.RootElement, auth.Plan, auth.Identity);
+        UsageSnapshot snapshot = ParseCodex(doc.RootElement, auth.Plan, auth.Identity);
+        using JsonDocument? credits = await OptionalGet("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+            auth.Token, false, cancellation, accountId: auth.AccountId);
+        return credits is null ? snapshot : AddCodexBankedResets(snapshot, credits.RootElement);
+    }
+
+    internal static UsageSnapshot AddCodexBankedResets(UsageSnapshot snapshot, JsonElement root)
+    {
+        JsonElement credits = JsonValue.At(root, "credits");
+        List<DateTimeOffset?>? expiries = null;
+        if (credits.ValueKind == JsonValueKind.Array)
+        {
+            expiries = [];
+            foreach (JsonElement credit in credits.EnumerateArray())
+                if (string.Equals(JsonValue.String(credit, "status"), "available", StringComparison.OrdinalIgnoreCase))
+                    expiries.Add(JsonValue.Date(credit, "expires_at"));
+            expiries.Sort((a, b) => (a ?? DateTimeOffset.MaxValue).CompareTo(b ?? DateTimeOffset.MaxValue));
+        }
+        long? available = JsonValue.Long(root, "available_count");
+        if (available is null or < 0) available = snapshot.BankedResets;
+        return snapshot with
+        {
+            BankedResets = available,
+            ApplicableBankedResets = available is long count && snapshot.ApplicableBankedResets is long applicable
+                ? Math.Min(count, applicable) : snapshot.ApplicableBankedResets,
+            BankedResetExpiries = expiries
+        };
     }
 
     internal static UsageSnapshot ParseCodex(JsonElement root, string? plan = null, string? identity = null)
@@ -397,11 +423,11 @@ internal sealed class UsageFetcher
     }
 
     private static async Task<JsonDocument?> OptionalGet(string url, string secret, bool cookie, CancellationToken cancellation,
-        string? beta = null, bool grok = false)
+        string? accountId = null, string? beta = null, bool grok = false)
     {
         using var shortTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         shortTimeout.CancelAfter(TimeSpan.FromSeconds(3));
-        try { return await Get(url, secret, cookie, shortTimeout.Token, beta: beta, grok: grok); }
+        try { return await Get(url, secret, cookie, shortTimeout.Token, accountId: accountId, beta: beta, grok: grok); }
         catch (Exception ex) when (!cancellation.IsCancellationRequested && ex is (HttpRequestException or TaskCanceledException or JsonException)) { return null; }
     }
 

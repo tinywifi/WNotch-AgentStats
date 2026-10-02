@@ -2,7 +2,7 @@
 
 An **Agent Usage** tab for [WNotch](https://github.com/Brick-Bread/WNotch). It keeps the accounts you've signed into on this PC in one place: Codex, Claude Code, Gemini CLI, Grok CLI, and Cursor.
 
-For each account, the tab shows the email and plan when the provider supplies them, usage bars for reported limits, and local reset times. You can rename accounts and move them up or down in the overview. Codex also shows the number of banked resets and how many are currently applicable. Its usage response does not provide individual banked-reset expiry dates, so the plugin does not guess them. A failed refresh leaves the last reading marked stale rather than presenting it as current.
+For each account, the tab shows the email and plan when the provider supplies them, usage bars for reported limits, and local reset times. You can rename accounts and move them up or down in the overview. Codex also shows banked-reset counts and each available reset's expiration when its separate read-only credit response supplies one. The overview shows the first three expirations; **Details** shows the full list. Missing dates stay marked unavailable. A failed refresh leaves the last reading marked stale rather than presenting it as current.
 
 ## Install
 
