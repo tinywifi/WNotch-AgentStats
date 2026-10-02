@@ -25,6 +25,7 @@ public sealed class AgentUsagePlugin : INotchPlugin
     private View _view;
     private Guid _selected;
     private int _overviewPage;
+    private bool _arranging;
     private string? _notice;
     private PendingLogin? _pendingLogin;
 
@@ -216,8 +217,6 @@ public sealed class AgentUsagePlugin : INotchPlugin
             blocks.Add(new PluginText { Text = $"{ProviderName(account.Provider)} · {account.Label}", Style = PluginTextStyle.Heading });
             blocks.Add(new PluginValueRow { Label = "Email", Value = account.Email ?? snapshot?.Identity ?? "Unavailable" });
             blocks.Add(new PluginValueRow { Label = "Plan", Value = snapshot?.Plan ?? account.ManualPlan ?? "Unavailable" });
-            blocks.Add(new PluginTextField { Label = "Account name", Value = account.Label, SubmitLabel = "Rename",
-                Submitted = value => Ui(() => SaveLabel(account, value)) });
             AddBankedResets(blocks, snapshot, account.Provider, false);
             if (snapshot?.Error is not null)
                 blocks.Add(new PluginText { Text = "Stale / unavailable: " + snapshot.Error, Style = PluginTextStyle.Muted, Color = GlowColor.Amber });
@@ -233,22 +232,26 @@ public sealed class AgentUsagePlugin : INotchPlugin
                         Color = window.UsedPercent >= 90 ? GlowColor.Red : null });
                 blocks.Add(new PluginText { Text = UsageText.Reset(window.ResetsAt, DateTimeOffset.UtcNow), Style = PluginTextStyle.Muted });
             }
-            blocks.Add(new PluginButtons { Actions =
-            [
-                new PluginAction { Label = "Move up", Enabled = Array.IndexOf(accounts, account) > 0,
-                    Clicked = () => Ui(() => MoveAccount(account, -1)) },
-                new PluginAction { Label = "Move down", Enabled = Array.IndexOf(accounts, account) < accounts.Length - 1,
-                    Clicked = () => Ui(() => MoveAccount(account, 1)) },
-                new PluginAction { Label = windows.Count > 7 ? "Details · more limits" : "Details",
-                    Clicked = () => Ui(() => { _selected = account.Id; _view = View.Detail; }) }
-            ] });
+            var accountActions = new List<PluginAction>();
+            if (_arranging)
+            {
+                accountActions.Add(new PluginAction { Label = "Move up", Enabled = Array.IndexOf(accounts, account) > 0,
+                    Clicked = () => Ui(() => MoveAccount(account, -1)) });
+                accountActions.Add(new PluginAction { Label = "Move down", Enabled = Array.IndexOf(accounts, account) < accounts.Length - 1,
+                    Clicked = () => Ui(() => MoveAccount(account, 1)) });
+            }
+            accountActions.Add(new PluginAction { Label = windows.Count > 7 ? "Details · more limits" : "Details",
+                Clicked = () => Ui(() => { _selected = account.Id; _view = View.Detail; }) });
+            blocks.Add(new PluginButtons { Actions = accountActions });
         }
         if (accounts.Length == 0)
             blocks.Add(new PluginText { Text = "No accounts found. Add a provider account to start.", Style = PluginTextStyle.Muted });
         var actions = new List<PluginAction>
         {
             new() { Label = "Accounts & sign-in", Clicked = () => Ui(() => { _view = View.Add; _notice = null; }) },
-            new() { Label = "Refresh", Clicked = () => _ = RefreshAll(true) }
+            new() { Label = "Refresh", Clicked = () => _ = RefreshAll(true) },
+            new() { Label = _arranging ? "Done arranging" : "Arrange", Enabled = accounts.Length > 1,
+                Clicked = () => Ui(() => _arranging = !_arranging) }
         };
         if (_overviewPage > 0) actions.Add(new PluginAction { Label = "Previous", Clicked = () => Ui(() => _overviewPage--) });
         if (_overviewPage < pageCount - 1) actions.Add(new PluginAction { Label = "Next", Clicked = () => Ui(() => _overviewPage++) });
@@ -275,6 +278,8 @@ public sealed class AgentUsagePlugin : INotchPlugin
             new PluginValueRow { Label = "Updated", Value = account.Source == AccountSource.Manual ? "Manual entry" : snapshot is null ? "Not yet" : snapshot.CheckedAt.ToLocalTime().ToString("g") },
         };
         blocks.Add(new PluginValueRow { Label = "Email", Value = account.Email ?? snapshot?.Identity ?? "Unavailable" });
+        blocks.Add(new PluginTextField { Label = "Account name", Value = account.Label, SubmitLabel = "Rename",
+            Submitted = value => Ui(() => SaveLabel(account, value)) });
         AddBankedResets(blocks, snapshot, account.Provider, true);
         blocks.Add(new PluginTextField { Label = "Email override", Value = account.Email, Hint = "Optional, submit to save or clear",
             Submitted = value => Ui(() => SaveEmail(account, value)) });
