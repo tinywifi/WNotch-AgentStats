@@ -17,6 +17,7 @@ public sealed class AgentUsagePlugin : INotchPlugin
     private readonly Dictionary<Guid, UsageSnapshot> _snapshots = [];
     private readonly Dictionary<Guid, string> _scopes = [];
     private readonly Dictionary<Guid, DateTimeOffset> _nextRefresh = [];
+    private readonly HashSet<Guid> _revealedEmails = [];
     private IPluginHost? _host;
     private AccountStore? _store;
     private AccountData _data = new();
@@ -209,13 +210,13 @@ public sealed class AgentUsagePlugin : INotchPlugin
         const int pageSize = 5;
         int pageCount = Math.Max(1, (accounts.Length + pageSize - 1) / pageSize);
         _overviewPage = Math.Clamp(_overviewPage, 0, pageCount - 1);
-        var blocks = new List<PluginBlock>();
+        var blocks = new List<PluginBlock> { PrivacyToggle() };
         foreach (Account account in accounts.Skip(_overviewPage * pageSize).Take(pageSize))
         {
             UsageSnapshot? snapshot = Current(account);
             IReadOnlyList<QuotaWindow> windows = snapshot?.Windows ?? [];
             blocks.Add(new PluginText { Text = $"{ProviderName(account.Provider)} · {account.Label}", Style = PluginTextStyle.Heading });
-            blocks.Add(new PluginValueRow { Label = "Email", Value = account.Email ?? snapshot?.Identity ?? "Unavailable" });
+            AddEmail(blocks, account, snapshot?.Identity, "Email", "Unavailable");
             blocks.Add(new PluginValueRow { Label = "Plan", Value = snapshot?.Plan ?? account.ManualPlan ?? "Unavailable" });
             AddBankedResets(blocks, snapshot, account.Provider, false);
             if (snapshot?.Error is not null)
@@ -273,16 +274,20 @@ public sealed class AgentUsagePlugin : INotchPlugin
         IReadOnlyList<QuotaWindow> windows = account.Source == AccountSource.Manual ? account.ManualWindows : snapshot?.Windows ?? [];
         var blocks = new List<PluginBlock>
         {
+            PrivacyToggle(),
             new PluginText { Text = $"{ProviderName(account.Provider)} · {account.Label}", Style = PluginTextStyle.Heading },
             new PluginValueRow { Label = "Plan", Value = snapshot?.Plan ?? account.ManualPlan ?? "Unavailable" },
             new PluginValueRow { Label = "Updated", Value = account.Source == AccountSource.Manual ? "Manual entry" : snapshot is null ? "Not yet" : snapshot.CheckedAt.ToLocalTime().ToString("g") },
         };
-        blocks.Add(new PluginValueRow { Label = "Email", Value = account.Email ?? snapshot?.Identity ?? "Unavailable" });
+        AddEmail(blocks, account, snapshot?.Identity, "Email", "Unavailable");
         blocks.Add(new PluginTextField { Label = "Account name", Value = account.Label, SubmitLabel = "Rename",
             Submitted = value => Ui(() => SaveLabel(account, value)) });
         AddBankedResets(blocks, snapshot, account.Provider, true);
-        blocks.Add(new PluginTextField { Label = "Email override", Value = account.Email, Hint = "Optional, submit to save or clear",
-            Submitted = value => Ui(() => SaveEmail(account, value)) });
+        if (_data.PrivacyMode)
+            blocks.Add(new PluginText { Text = "Turn off Privacy to edit the email override.", Style = PluginTextStyle.Muted });
+        else
+            blocks.Add(new PluginTextField { Label = "Email override", Value = account.Email, Hint = "Optional, submit to save or clear",
+                Submitted = value => Ui(() => SaveEmail(account, value)) });
         if (snapshot?.Error is not null) blocks.Add(new PluginText { Text = "Stale / unavailable: " + snapshot.Error, Style = PluginTextStyle.Muted, Color = GlowColor.Amber });
         if (windows.Count == 0) blocks.Add(new PluginText { Text = "No measured quota windows are available for this account.", Style = PluginTextStyle.Muted });
         foreach (QuotaWindow window in windows.Take(20))
@@ -316,6 +321,7 @@ public sealed class AgentUsagePlugin : INotchPlugin
     {
         var blocks = new List<PluginBlock>
         {
+            PrivacyToggle(),
             new PluginText { Text = "Provider accounts", Style = PluginTextStyle.Heading },
             new PluginText { Text = "Existing CLI and app sign-ins are detected locally. Add a separate Codex or Claude account only if you want another login; credentials stay on this PC.", Style = PluginTextStyle.Muted }
         };
@@ -333,12 +339,11 @@ public sealed class AgentUsagePlugin : INotchPlugin
                 Provider.Grok => "Uses ~/.grok/auth.json. Sign in with Grok CLI, then detect it here.",
                 _ => "Uses the Cursor IDE or cursor-agent sign-in already on this computer."
             }, Style = PluginTextStyle.Muted });
-            blocks.Add(new PluginValueRow { Label = "System default", Value = system is null ? "Not detected" :
-                system.Email ?? snapshot?.Identity ?? "Detected" });
+            if (system is null) blocks.Add(new PluginValueRow { Label = "System default", Value = "Not detected" });
+            else AddEmail(blocks, system, snapshot?.Identity, "System default", "Detected");
             Account[] managed = _data.Accounts.Where(a => a.Provider == provider && !a.DefaultProfile).ToArray();
             foreach (Account account in managed.Take(5))
-                blocks.Add(new PluginValueRow { Label = account.Label,
-                    Value = account.Email ?? Current(account)?.Identity ?? "Awaiting refresh" });
+                AddEmail(blocks, account, Current(account)?.Identity, account.Label, "Awaiting refresh");
             if (managed.Length > 5)
                 blocks.Add(new PluginText { Text = $"{managed.Length - 5} more account(s) on the overview.", Style = PluginTextStyle.Muted });
             blocks.Add(new PluginButtons { Actions =
@@ -629,6 +634,44 @@ public sealed class AgentUsagePlugin : INotchPlugin
         account.Email = email.Length == 0 ? null : email;
         try { Save(); } catch { account.Email = previous; throw; }
         _notice = "Email saved.";
+    }
+
+    private PluginToggle PrivacyToggle() => new()
+    {
+        Label = "Privacy",
+        Detail = "Mask account emails until clicked",
+        Value = _data.PrivacyMode,
+        Changed = value => Ui(() =>
+        {
+            bool previous = _data.PrivacyMode;
+            _data.PrivacyMode = value;
+            try { Save(); }
+            catch { _data.PrivacyMode = previous; throw; }
+            _revealedEmails.Clear();
+        })
+    };
+
+    private void AddEmail(List<PluginBlock> blocks, Account account, string? detected, string label, string fallback)
+    {
+        string? email = account.Email ?? detected;
+        if (!_data.PrivacyMode || string.IsNullOrWhiteSpace(email))
+        {
+            blocks.Add(new PluginValueRow { Label = label, Value = email ?? fallback });
+            return;
+        }
+
+        bool revealed = _revealedEmails.Contains(account.Id);
+        blocks.Add(new PluginButtons { Actions =
+        [
+            new PluginAction
+            {
+                Label = revealed ? $"{label} · {email} · Hide" : $"{label} · ▒▒▒▒▒▒▒▒ · Show",
+                Clicked = () => Ui(() =>
+                {
+                    if (!_revealedEmails.Add(account.Id)) _revealedEmails.Remove(account.Id);
+                })
+            }
+        ] });
     }
 
     private void SaveLabel(Account account, string value)

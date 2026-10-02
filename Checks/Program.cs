@@ -1,6 +1,8 @@
 using System.Text.Json;
+using System.Reflection;
 using AgentUsage;
 using Microsoft.Data.Sqlite;
+using Notch.Core.Plugins;
 
 static void Check(bool condition, string message)
 {
@@ -78,12 +80,13 @@ string temporary = Path.Combine(Path.GetTempPath(), "AgentUsage-check-" + Guid.N
 try
 {
     var store = new AccountStore(temporary);
-    var state = new AccountData();
+    var state = new AccountData { PrivacyMode = true };
     state.Accounts.Add(new Account { Provider = Provider.Claude, Source = AccountSource.Secret, Label = "test", Secret = "sentinel-secret" });
     state.Accounts.Add(new Account { Provider = Provider.Gemini, Source = AccountSource.Manual, Label = "manual",
         ManualWindows = [new QuotaWindow("Weekly", 42, DateTimeOffset.Parse("2030-01-01T00:00:00Z"))] });
     store.Save(state);
     Check(store.Load().Accounts.Single(a => a.Source == AccountSource.Secret).Secret == "sentinel-secret", "DPAPI round trip");
+    Check(store.Load().PrivacyMode, "privacy preference round trip");
     Check(store.Load().Accounts.Single(a => a.Source == AccountSource.Manual).ManualWindows.Single().UsedPercent == 42, "manual state round trip");
     byte[] file = File.ReadAllBytes(Path.Combine(temporary, "accounts.dpapi"));
     Check(!System.Text.Encoding.UTF8.GetString(file).Contains("sentinel-secret", StringComparison.Ordinal), "credential must not appear on disk");
@@ -108,6 +111,41 @@ try
     Check(fetcher.CredentialScope(saved) != firstScope, "credential switch changes account scope");
 }
 finally { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); }
+
+var plugin = new AgentUsagePlugin();
+var privateFlags = BindingFlags.Instance | BindingFlags.NonPublic;
+var privateState = new AccountData { PrivacyMode = true };
+var firstAccount = new Account { Provider = Provider.Codex, Label = "Personal", Email = "private@example.test" };
+var secondAccount = new Account { Provider = Provider.Claude, Label = "Work" };
+privateState.Accounts.AddRange([firstAccount, secondAccount]);
+typeof(AgentUsagePlugin).GetField("_data", privateFlags)!.SetValue(plugin, privateState);
+typeof(AgentUsagePlugin).GetField("_selected", privateFlags)!.SetValue(plugin, firstAccount.Id);
+var snapshots = (Dictionary<Guid, UsageSnapshot>)typeof(AgentUsagePlugin).GetField("_snapshots", privateFlags)!.GetValue(plugin)!;
+snapshots[secondAccount.Id] = new UsageSnapshot("Pro", "detected@example.test", [], DateTimeOffset.UtcNow);
+PluginPage Page(string method) => (PluginPage)typeof(AgentUsagePlugin).GetMethod(method, privateFlags)!.Invoke(plugin, null)!;
+string PageText(PluginPage page) => string.Join("\n", page.Blocks.Select(block => block switch
+{
+    PluginText text => text.Text,
+    PluginValueRow row => row.Label + row.Value,
+    PluginTextField field => field.Label + field.Value,
+    PluginButtons buttons => string.Join(" ", buttons.Actions.Select(action => action.Label)),
+    _ => ""
+}));
+foreach (string method in new[] { "BuildOverview", "BuildDetail", "BuildAdd" })
+{
+    PluginPage page = Page(method);
+    Check(page.Blocks.First() is PluginToggle { Value: true }, method + " privacy toggle");
+    Check(!PageText(page).Contains("private@example.test") && !PageText(page).Contains("detected@example.test"), method + " masked emails");
+    Check(!page.Blocks.OfType<PluginTextField>().Any(field => field.Label == "Email override"), method + " no raw email field");
+}
+PluginAction maskedEmail = Page("BuildOverview").Blocks.OfType<PluginButtons>()
+    .SelectMany(buttons => buttons.Actions).First(action => action.Label.StartsWith("Email · ▒"));
+maskedEmail.Clicked!();
+Check(PageText(Page("BuildOverview")).Contains("private@example.test"), "click reveals email");
+PluginAction revealedEmail = Page("BuildOverview").Blocks.OfType<PluginButtons>()
+    .SelectMany(buttons => buttons.Actions).Single(action => action.Label.Contains("private@example.test"));
+revealedEmail.Clicked!();
+Check(!PageText(Page("BuildOverview")).Contains("private@example.test"), "second click hides email");
 
 Console.WriteLine("Synthetic checks passed.");
 

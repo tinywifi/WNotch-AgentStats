@@ -23,6 +23,7 @@ internal sealed class AccountData
 {
     public List<Account> Accounts { get; set; } = [];
     public HashSet<Provider> HiddenDefaults { get; set; } = [];
+    public bool PrivacyMode { get; set; }
 }
 
 internal sealed record QuotaWindow(string Label, double? UsedPercent, DateTimeOffset? ResetsAt);

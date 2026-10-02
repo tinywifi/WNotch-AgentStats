@@ -7,5 +7,9 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\AgentUsage.csproj" />
+    <Reference Include="Notch.Core">
+      <HintPath Condition="'$(NotchCorePath)' != ''">$(NotchCorePath)</HintPath>
+      <HintPath Condition="'$(NotchCorePath)' == ''">$(LocalAppData)\Programs\Notch\Notch.Core.dll</HintPath>
+    </Reference>
   </ItemGroup>
 </Project>
