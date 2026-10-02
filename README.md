@@ -44,3 +44,7 @@ dotnet run --project Checks/AgentUsage.Checks.csproj -c Release
 For another WNotch build, pass `-p:NotchCorePath="C:\path\to\Notch.Core.dll"` to both commands. The checks use synthetic provider responses and temporary local test files; `-- --live-codex` also performs a read-only quota check against the currently signed-in Codex account.
 
 Pushing a `v*` tag runs the release workflow: it builds against WNotch v0.8.1, runs the checks, publishes a plugin folder, and attaches exactly one ZIP to the GitHub release. The ZIP has `plugin.json` at its root for WNotch's GitHub installer.
+
+## License
+
+[MIT](LICENSE).
