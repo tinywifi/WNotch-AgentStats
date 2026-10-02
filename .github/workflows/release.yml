@@ -1,0 +1,33 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/checkout@v4
+        with:
+          repository: Brick-Bread/WNotch
+          ref: v0.8.1
+          path: notch
+      - run: dotnet build notch/src/Notch.Core/Notch.Core.csproj -c Release -o notch-core
+      - run: dotnet run --project Checks/AgentUsage.Checks.csproj -c Release -p:NotchCorePath=${{ github.workspace }}\notch-core\Notch.Core.dll
+      - run: dotnet publish AgentUsage.csproj -c Release -o dist -p:NotchCorePath=${{ github.workspace }}\notch-core\Notch.Core.dll
+      - name: Package and publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Remove-Item dist\*.pdb -ErrorAction SilentlyContinue
+          Compress-Archive -Path dist\* -DestinationPath WNotch-AgentStats.zip
+          gh release create $env:GITHUB_REF_NAME WNotch-AgentStats.zip --title $env:GITHUB_REF_NAME --generate-notes
