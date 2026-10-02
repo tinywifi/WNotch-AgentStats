@@ -21,8 +21,10 @@ jobs:
           ref: v0.8.1
           path: notch
       - run: dotnet build notch/src/Notch.Core/Notch.Core.csproj -c Release -o notch-core
-      - run: dotnet run --project Checks/AgentUsage.Checks.csproj -c Release -p:NotchCorePath=${{ github.workspace }}\notch-core\Notch.Core.dll
-      - run: dotnet publish AgentUsage.csproj -c Release -o dist -p:NotchCorePath=${{ github.workspace }}\notch-core\Notch.Core.dll
+      - run: dotnet run --project Checks/AgentUsage.Checks.csproj -c Release "-p:NotchCorePath=$env:GITHUB_WORKSPACE\notch-core\Notch.Core.dll"
+        shell: pwsh
+      - run: dotnet publish AgentUsage.csproj -c Release -o dist "-p:NotchCorePath=$env:GITHUB_WORKSPACE\notch-core\Notch.Core.dll"
+        shell: pwsh
       - name: Package and publish
         shell: pwsh
         env:

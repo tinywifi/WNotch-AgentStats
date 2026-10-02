@@ -9,6 +9,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="AgentUsage.Checks" />
     <Compile Remove="Checks\**\*.cs" />
+    <Compile Remove="notch\**\*.cs" />
     <Reference Include="Notch.Core">
       <HintPath>$(NotchCorePath)</HintPath>
       <Private>false</Private>
