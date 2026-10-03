@@ -1,9 +1,11 @@
 {
   "id": "agentstats.agent-usage",
   "name": "WNotch-AgentStats",
-  "version": "1.3.4",
+  "version": "1.3.5",
+  "author": "tinywifi",
   "description": "Coding-agent accounts and usage in the notch.",
   "assembly": "AgentUsage.dll",
   "apiVersion": 5,
-  "repository": "tinywifi/WNotch-AgentStats"
+  "repository": "tinywifi/WNotch-AgentStats",
+  "permissions": ["network", "filesystem", "terminal", "shell", "clipboard"]
 }

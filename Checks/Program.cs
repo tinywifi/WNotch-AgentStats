@@ -16,6 +16,19 @@ Check(AgentUsagePlugin.RequiresSignIn(new SignInRequiredException("expired")), "
 Check(AgentUsagePlugin.RequiresSignIn(new FileNotFoundException()), "missing sign-in status");
 Check(AgentUsagePlugin.RequiresSignIn(new HttpRequestException("rejected", null, System.Net.HttpStatusCode.Unauthorized)), "rejected sign-in status");
 Check(!AgentUsagePlugin.RequiresSignIn(new HttpRequestException("offline")), "network failure is not sign-out");
+PluginManifest manifest = PluginManifest.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "plugin.json")));
+Check(manifest.Id == "agentstats.agent-usage" && manifest.ApiVersion == 5, "stable plugin identity and oldest supported API");
+using (JsonDocument manifestJson = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "plugin.json"))))
+{
+    string[] permissions = [.. manifestJson.RootElement.GetProperty("permissions").EnumerateArray().Select(item => item.GetString()!)];
+    Check(new[] { "network", "filesystem", "terminal", "shell", "clipboard" }.All(permissions.Contains), "declared host permissions");
+}
+Type? scanner = typeof(INotchPlugin).Assembly.GetType("Notch.Core.Plugins.Checks.PluginScanner");
+if (scanner is not null)
+{
+    object report = scanner.GetMethod("Scan")!.Invoke(null, [Path.GetDirectoryName(typeof(AgentUsagePlugin).Assembly.Location)!])!;
+    Check(!(bool)report.GetType().GetProperty("Blocked")!.GetValue(report)!, "new Notch safety scan accepts plugin");
+}
 var login = ProviderSignIn.StartInfo(@"C:\Program Files\Codex\codex.exe", Provider.Codex, @"C:\Profiles\second");
 Check(login.FileName == "cmd.exe" && login.Arguments == "/k \"\"C:\\Program Files\\Codex\\codex.exe\" login\"", "Codex login command quoting");
 Check(login.Environment["CODEX_HOME"] == @"C:\Profiles\second", "Codex isolated account profile");

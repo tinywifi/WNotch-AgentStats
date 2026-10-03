@@ -18,11 +18,11 @@ Each account shows its name, email, plan, main usage bar, and local reset time. 
 
 ## Install
 
-In WNotch **Settings → Plugins**, enter `tinywifi/WNotch-AgentStats` and press **Install**, then **Save** to enable it. WNotch downloads the ZIP attached to the latest release. Later, use **Check for updates** in the same settings page.
+In WNotch **Settings → Plugins**, enter `tinywifi/WNotch-AgentStats` and press **Install**, then **Save** to enable it. You can also find it in **Browse plugins** on WNotch 0.11 or newer. WNotch downloads the ZIP attached to the latest release. Later, use **Check for updates** in the same settings page.
 
-For a manual install, download the release ZIP and extract its contents directly into `%APPDATA%\Notch\plugins\agentstats.agent-usage\`. `plugin.json` and `AgentUsage.dll` must be in that folder, not a second nested folder. Enable it in WNotch's Plugins settings. To replace a manually installed DLL, quit WNotch first, replace the files, then reopen it.
+For a manual install, download the release ZIP and extract its contents directly into `%APPDATA%\Notch\plugins\agentstats.agent-usage\`. `plugin.json` and `AgentUsage.dll` must be in that folder, not a second nested folder. Enable it in WNotch's Plugins settings. To replace a manually installed DLL, quit WNotch first, replace the files, then reopen it. On WNotch 0.11 or newer, replacing files by hand requires switching the plugin off and on again in Settings to review and approve the changed files.
 
-Requires WNotch v0.8.1 or newer. The plugin ID remains `agentstats.agent-usage` so existing accounts and updates continue to work.
+Requires WNotch v0.8.1 or newer. The plugin ID remains `agentstats.agent-usage` so existing accounts and updates continue to work. The manifest lists network, filesystem, terminal, shell, and clipboard access; these describe usage fetching, local sign-in detection, starting official clients, and copying a sign-in link. They are disclosures, not sandbox restrictions.
 
 ## Accounts and sign-in
 
@@ -41,7 +41,7 @@ dotnet publish AgentUsage.csproj -c Release -o dist/agentstats.agent-usage
 dotnet run --project Checks/AgentUsage.Checks.csproj -c Release
 ```
 
-For another WNotch build, pass `-p:NotchCorePath="C:\path\to\Notch.Core.dll"` to both commands. The checks use synthetic provider responses and temporary local test files; `-- --live-codex` also performs a read-only quota check against the currently signed-in Codex account.
+For another WNotch build, pass `-p:NotchCorePath="C:\path\to\Notch.Core.dll"` to both commands. A locally published DLL targets the version of `Notch.Core.dll` used for that build; older WNotch versions may reject it even though the plugin API is still 5. The release workflow builds against v0.8.1 for the documented compatibility floor. The checks use synthetic provider responses and temporary local test files; `-- --live-codex` also performs a read-only quota check against the currently signed-in Codex account.
 
 Pushing a `v*` tag runs the release workflow: it builds against WNotch v0.8.1, runs the checks, publishes a plugin folder, and attaches exactly one ZIP to the GitHub release. The ZIP has `plugin.json` at its root for WNotch's GitHub installer.
 
